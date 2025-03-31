@@ -1,232 +1,127 @@
 #!/usr/bin/env bash
-
-# Copyright (c) 2021-2025 tteck
+source <(curl -s https://raw.githubusercontent.com/tteck/Proxmox/main/misc/build.func)
+# Copyright (c) 2021-2024 tteck
 # Author: tteck (tteckster)
-# License: MIT | https://github.com/community-scripts/ProxmoxVE/raw/main/LICENSE
-# Source: https://docs.paperless-ngx.com/
+# License: MIT
+# https://github.com/tteck/Proxmox/raw/main/LICENSE
 
-source /dev/stdin <<<"$FUNCTIONS_FILE_PATH"
+function header_info {
+  clear
+  cat <<"EOF"
+    ____                        __                                     
+   / __ \____ _____  ___  _____/ /__  __________    ____  ____ __  __
+  / /_/ / __ `/ __ \/ _ \/ ___/ / _ \/ ___/ ___/___/ __ \/ __ `/ |/_/
+ / ____/ /_/ / /_/ /  __/ /  / /  __(__  |__  )___/ / / / /_/ />  <  
+/_/    \__,_/ .___/\___/_/  /_/\___/____/____/   /_/ /_/\__, /_/|_|  
+           /_/                                         /____/        
+ 
+EOF
+}
+header_info
+echo -e "Loading..."
+APP="Paperless-ngx"
+var_disk="10"
+var_cpu="2"
+var_ram="2048"
+var_os="debian"
+var_version="12"
+variables
 color
-verb_ip6
 catch_errors
-setting_up_container
-network_check
-update_os
 
-msg_info "Installing Dependencies (Patience)"
-$STD apt-get install -y \
-  redis \
-  postgresql \
-  build-essential \
-  imagemagick \
-  fonts-liberation \
-  optipng \
-  gnupg \
-  libpq-dev \
-  libmagic-dev \
-  mime-support \
-  libzbar0 \
-  poppler-utils \
-  default-libmysqlclient-dev \
-  automake \
-  libtool \
-  pkg-config \
-  git \
-  libtiff-dev \
-  libpng-dev \
-  libleptonica-dev
-msg_ok "Installed Dependencies"
+function default_settings() {
+  CT_TYPE="1"
+  PW=""
+  CT_ID=$NEXTID
+  HN=$NSAPP
+  DISK_SIZE="$var_disk"
+  CORE_COUNT="$var_cpu"
+  RAM_SIZE="$var_ram"
+  BRG="vmbr0"
+  NET="dhcp"
+  GATE=""
+  APT_CACHER=""
+  APT_CACHER_IP=""
+  DISABLEIP6="no"
+  MTU=""
+  SD=""
+  NS=""
+  MAC=""
+  VLAN=""
+  SSH="no"
+  VERB="no"
+  echo_default
+}
 
-msg_info "Setup Python3"
-$STD apt-get install -y \
-  python3 \
-  python3-pip \
-  python3-dev \
-  python3-setuptools \
-  python3-wheel
-msg_ok "Setup Python3"
+function update_script() {
+  if [[ ! -d /opt/paperless ]]; then
+    msg_error "No ${APP} Installation Found!"
+    exit
+  fi
+  RELEASE=$(curl -s https://api.github.com/repos/paperless-ngx/paperless-ngx/releases/tags/v1.14.4 | grep "tag_name" | awk '{print substr($2, 2, length($2)-3) }')
 
-msg_info "Installing OCR Dependencies (Patience)"
-$STD apt-get install -y \
-  unpaper \
-  icc-profiles-free \
-  qpdf \
-  liblept5 \
-  libxml2 \
-  pngquant \
-  zlib1g \
-  tesseract-ocr \
-  tesseract-ocr-eng
+  UPD=$(whiptail --backtitle "Proxmox VE Helper Scripts" --title "SUPPORT" --radiolist --cancel-button Exit-Script "Spacebar = Select" 11 58 2 \
+    "1" "Update Paperless-ngx to $RELEASE" ON \
+    "2" "Paperless-ngx Credentials" OFF \
+    3>&1 1>&2 2>&3)
+  header_info
+  if [ "$UPD" == "1" ]; then
+    if [[ "${RELEASE}" != "$(cat /opt/${APP}_version.txt)" ]] || [[ ! -f /opt/${APP}_version.txt ]]; then
+	  if [[ "$(gs --version 2>/dev/null)" != "10.04.0" ]]; then
+        msg_info "Updating Ghostscript"
+        cd /tmp
+        wget -q https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10040/ghostscript-10.04.0.tar.gz
+        tar -xzf ghostscript-10.04.0.tar.gz
+        cd ghostscript-10.04.0
+        ./configure &>/dev/null
+        make &>/dev/null
+        sudo make install &>/dev/null
+        rm -rf /tmp/ghostscript*
+        msg_ok "Ghostscript updated to 10.04.0"
+      fi
+      msg_info "Stopping all Paperless-ngx Services"
+      systemctl stop paperless-consumer paperless-webserver paperless-scheduler paperless-task-queue.service
+      msg_ok "Stopped all Paperless-ngx Services"
 
-cd /tmp
-wget -q https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10040/ghostscript-10.04.0.tar.gz
-$STD tar -xzf ghostscript-10.04.0.tar.gz
-cd ghostscript-10.04.0
-$STD ./configure
-$STD make
-$STD sudo make install
-msg_ok "Installed OCR Dependencies"
+      msg_info "Updating to ${RELEASE}"
+      cd ~
+      wget -q https://github.com/paperless-ngx/paperless-ngx/releases/download/$RELEASE/paperless-ngx-$RELEASE.tar.xz
+      tar -xf paperless-ngx-$RELEASE.tar.xz
+      cp -r /opt/paperless/paperless.conf paperless-ngx/
+      cp -r paperless-ngx/* /opt/paperless/
+      cd /opt/paperless
+      pip install -r requirements.txt &>/dev/null
+      cd /opt/paperless/src
+      /usr/bin/python3 manage.py migrate &>/dev/null
+      echo "${RELEASE}" >/opt/${APP}_version.txt
+      msg_ok "Updated to ${RELEASE}"
 
-msg_info "Installing JBIG2"
-$STD git clone https://github.com/ie13/jbig2enc /opt/jbig2enc
-cd /opt/jbig2enc
-$STD bash ./autogen.sh
-$STD bash ./configure
-$STD make
-$STD make install
-rm -rf /opt/jbig2enc
-msg_ok "Installed JBIG2"
+      msg_info "Cleaning up"
+      cd ~
+      rm paperless-ngx-$RELEASE.tar.xz
+      rm -rf paperless-ngx
+      msg_ok "Cleaned"
 
-msg_info "Installing Paperless-ngx (Patience)"
-Paperlessngx=$(wget -q https://github.com/paperless-ngx/paperless-ngx/releases/tag/v1.14.4 -O - | grep "title>Release" | cut -d " " -f 5)
-cd /opt
-$STD wget https://github.com/paperless-ngx/paperless-ngx/releases/download/$Paperlessngx/paperless-ngx-$Paperlessngx.tar.xz
-$STD tar -xf paperless-ngx-$Paperlessngx.tar.xz -C /opt/
-mv paperless-ngx paperless
-rm paperless-ngx-$Paperlessngx.tar.xz
-cd /opt/paperless
-$STD pip install --upgrade pip
-$STD pip install -r requirements.txt
-curl -s -o /opt/paperless/paperless.conf https://raw.githubusercontent.com/paperless-ngx/paperless-ngx/main/paperless.conf.example
-mkdir -p {consume,data,media,static}
-sed -i -e 's|#PAPERLESS_REDIS=redis://localhost:6379|PAPERLESS_REDIS=redis://localhost:6379|' /opt/paperless/paperless.conf
-sed -i -e "s|#PAPERLESS_CONSUMPTION_DIR=../consume|PAPERLESS_CONSUMPTION_DIR=/opt/paperless/consume|" /opt/paperless/paperless.conf
-sed -i -e "s|#PAPERLESS_DATA_DIR=../data|PAPERLESS_DATA_DIR=/opt/paperless/data|" /opt/paperless/paperless.conf
-sed -i -e "s|#PAPERLESS_MEDIA_ROOT=../media|PAPERLESS_MEDIA_ROOT=/opt/paperless/media|" /opt/paperless/paperless.conf
-sed -i -e "s|#PAPERLESS_STATICDIR=../static|PAPERLESS_STATICDIR=/opt/paperless/static|" /opt/paperless/paperless.conf
-echo "${Paperlessngx}" >/opt/${APPLICATION}_version.txt
-msg_ok "Installed Paperless-ngx"
+      msg_info "Starting all Paperless-ngx Services"
+      systemctl start paperless-consumer paperless-webserver paperless-scheduler paperless-task-queue.service
+      sleep 1
+      msg_ok "Started all Paperless-ngx Services"
+      msg_ok "Updated Successfully!\n"
+    else
+      msg_ok "No update required. ${APP} is already at ${RELEASE}"
+    fi
+    exit
+  fi
+  if [ "$UPD" == "2" ]; then
+    cat paperless.creds
+    exit
+  fi
+}
 
-msg_info "Installing Natural Language Toolkit (Patience)"
-$STD python3 -m nltk.downloader -d /usr/share/nltk_data all
-msg_ok "Installed Natural Language Toolkit"
+start
+build_container
+description
 
-msg_info "Setting up PostgreSQL database"
-DB_NAME=paperlessdb
-DB_USER=paperless
-DB_PASS="$(openssl rand -base64 18 | cut -c1-13)"
-SECRET_KEY="$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32)"
-$STD sudo -u postgres psql -c "CREATE ROLE $DB_USER WITH LOGIN PASSWORD '$DB_PASS';"
-$STD sudo -u postgres psql -c "CREATE DATABASE $DB_NAME WITH OWNER $DB_USER ENCODING 'UTF8' TEMPLATE template0;"
-$STD sudo -u postgres psql -c "ALTER ROLE $DB_USER SET client_encoding TO 'utf8';"
-$STD sudo -u postgres psql -c "ALTER ROLE $DB_USER SET default_transaction_isolation TO 'read committed';"
-$STD sudo -u postgres psql -c "ALTER ROLE $DB_USER SET timezone TO 'UTC'"
-echo "" >>~/paperless.creds
-echo -e "Paperless-ngx Database User: \e[32m$DB_USER\e[0m" >>~/paperless.creds
-echo -e "Paperless-ngx Database Password: \e[32m$DB_PASS\e[0m" >>~/paperless.creds
-echo -e "Paperless-ngx Database Name: \e[32m$DB_NAME\e[0m" >>~/paperless.creds
-sed -i -e 's|#PAPERLESS_DBHOST=localhost|PAPERLESS_DBHOST=localhost|' /opt/paperless/paperless.conf
-sed -i -e 's|#PAPERLESS_DBPORT=5432|PAPERLESS_DBPORT=5432|' /opt/paperless/paperless.conf
-sed -i -e "s|#PAPERLESS_DBNAME=paperless|PAPERLESS_DBNAME=$DB_NAME|" /opt/paperless/paperless.conf
-sed -i -e "s|#PAPERLESS_DBUSER=paperless|PAPERLESS_DBUSER=$DB_USER|" /opt/paperless/paperless.conf
-sed -i -e "s|#PAPERLESS_DBPASS=paperless|PAPERLESS_DBPASS=$DB_PASS|" /opt/paperless/paperless.conf
-sed -i -e "s|#PAPERLESS_SECRET_KEY=change-me|PAPERLESS_SECRET_KEY=$SECRET_KEY|" /opt/paperless/paperless.conf
-cd /opt/paperless/src
-$STD python3 manage.py migrate
-msg_ok "Set up PostgreSQL database"
-
-read -r -p "Would you like to add Adminer? <y/N> " prompt
-if [[ "${prompt,,}" =~ ^(y|yes)$ ]]; then
-  msg_info "Installing Adminer"
-  $STD apt install -y adminer
-  $STD a2enconf adminer
-  systemctl reload apache2
-  IP=$(hostname -I | awk '{print $1}')
-  echo "" >>~/paperless.creds
-  echo -e "Adminer Interface: \e[32m$IP/adminer/\e[0m" >>~/paperless.creds
-  echo -e "Adminer System: \e[32mPostgreSQL\e[0m" >>~/paperless.creds
-  echo -e "Adminer Server: \e[32mlocalhost:5432\e[0m" >>~/paperless.creds
-  echo -e "Adminer Username: \e[32m$DB_USER\e[0m" >>~/paperless.creds
-  echo -e "Adminer Password: \e[32m$DB_PASS\e[0m" >>~/paperless.creds
-  echo -e "Adminer Database: \e[32m$DB_NAME\e[0m" >>~/paperless.creds
-  msg_ok "Installed Adminer"
-fi
-
-msg_info "Setting up admin Paperless-ngx User & Password"
-## From https://github.com/linuxserver/docker-paperless-ngx/blob/main/root/etc/cont-init.d/99-migrations
-cat <<EOF | python3 /opt/paperless/src/manage.py shell
-from django.contrib.auth import get_user_model
-UserModel = get_user_model()
-user = UserModel.objects.create_user('admin', password='$DB_PASS')
-user.is_superuser = True
-user.is_staff = True
-user.save()
-EOF
-echo "" >>~/paperless.creds
-echo -e "Paperless-ngx WebUI User: \e[32madmin\e[0m" >>~/paperless.creds
-echo -e "Paperless-ngx WebUI Password: \e[32m$DB_PASS\e[0m" >>~/paperless.creds
-echo "" >>~/paperless.creds
-msg_ok "Set up admin Paperless-ngx User & Password"
-
-msg_info "Creating Services"
-cat <<EOF >/etc/systemd/system/paperless-scheduler.service
-[Unit]
-Description=Paperless Celery beat
-Requires=redis.service
-
-[Service]
-WorkingDirectory=/opt/paperless/src
-ExecStart=celery --app paperless beat --loglevel INFO
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat <<EOF >/etc/systemd/system/paperless-task-queue.service
-[Unit]
-Description=Paperless Celery Workers
-Requires=redis.service
-After=postgresql.service
-
-[Service]
-WorkingDirectory=/opt/paperless/src
-ExecStart=celery --app paperless worker --loglevel INFO
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat <<EOF >/etc/systemd/system/paperless-consumer.service
-[Unit]
-Description=Paperless consumer
-Requires=redis.service
-
-[Service]
-WorkingDirectory=/opt/paperless/src
-ExecStartPre=/bin/sleep 2
-ExecStart=python3 manage.py document_consumer
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat <<EOF >/etc/systemd/system/paperless-webserver.service
-[Unit]
-Description=Paperless webserver
-After=network.target
-Wants=network.target
-Requires=redis.service
-
-[Service]
-WorkingDirectory=/opt/paperless/src
-ExecStart=/usr/local/bin/gunicorn -c /opt/paperless/gunicorn.conf.py paperless.asgi:application
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sed -i -e 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml
-
-systemctl daemon-reload
-$STD systemctl enable -q --now paperless-webserver paperless-scheduler paperless-task-queue paperless-consumer
-msg_ok "Created Services"
-
-motd_ssh
-customize
-
-msg_info "Cleaning up"
-rm -rf /opt/paperless/docker
-rm -rf /tmp/ghostscript*
-$STD apt-get -y autoremove
-$STD apt-get -y autoclean
-msg_ok "Cleaned"
+msg_ok "Completed Successfully!\n"
+echo -e "${APP} should be reachable by going to the following URL.
+         ${BL}http://${IP}:8000${CL} \n"
